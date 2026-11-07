@@ -219,6 +219,7 @@ private slots:
     void listTest();
     void listPositionTest();
     void treeTest();
+    void treeCollapseAccessibleChildren();
     void tableTest();
     void rootIndexView();
 
@@ -3214,6 +3215,36 @@ void tst_QAccessibility::listTest()
     QVERIFY(table2->cellAt(2,0) == 0);
     }
     QTestAccessibility::clearEvents();
+}
+
+void tst_QAccessibility::treeCollapseAccessibleChildren()
+{
+    const auto clearRemainingEvents = qScopeGuard([] { QTestAccessibility::clearEvents(); });
+    QTreeWidget tree;
+    tree.setColumnCount(1);
+    auto *first = new QTreeWidgetItem(&tree, {QStringLiteral("first")});
+    new QTreeWidgetItem(first, {QStringLiteral("nested")});
+    new QTreeWidgetItem(&tree, {QStringLiteral("second")});
+    tree.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&tree));
+    tree.expandAll();
+    QCoreApplication::processEvents();
+
+    QAccessibleInterface *accessible = QAccessible::queryAccessibleInterface(&tree);
+    QVERIFY(accessible);
+    for (int i = 0; i < accessible->childCount(); ++i)
+        QVERIFY(accessible->child(i));
+
+    tree.collapseItem(first);
+    QCoreApplication::processEvents();
+    accessible = QAccessible::queryAccessibleInterface(&tree);
+    QVERIFY(accessible);
+    for (int i = 0; i < accessible->childCount(); ++i) {
+        auto *child = accessible->child(i);
+        QVERIFY(child);
+        QCOMPARE(accessible->indexOfChild(child), i);
+        QVERIFY(child->text(QAccessible::Name) != QStringLiteral("nested"));
+    }
 }
 
 void tst_QAccessibility::treeTest()

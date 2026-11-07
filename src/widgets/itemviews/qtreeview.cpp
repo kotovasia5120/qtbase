@@ -3253,6 +3253,9 @@ void QTreeViewPrivate::collapse(int item, bool emitSignal)
         index = viewItems[index].parentItem;
     }
     removeViewItems(item + 1, total); // collapse
+#if QT_CONFIG(accessibility)
+    pendingAccessibilityUpdate |= total > 0;
+#endif
     q->setState(stateBeforeAnimation);
 
     if (emitSignal) {
@@ -3262,6 +3265,7 @@ void QTreeViewPrivate::collapse(int item, bool emitSignal)
             beginAnimatedOperation();
 #endif // animation
     }
+    updateAccessibility();
 }
 
 #if QT_CONFIG(animation)
