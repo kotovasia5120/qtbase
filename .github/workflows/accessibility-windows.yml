@@ -1,0 +1,80 @@
+name: Qt accessibility Windows validation
+on:
+  push:
+    branches: [ci/accessibility-windows]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: windows-2022
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 3
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Configure Qt
+        run: >-
+          cmake -S . -B build -G Ninja
+          -DQT_BUILD_TESTS=ON -DQT_BUILD_EXAMPLES=OFF
+          -DCMAKE_BUILD_TYPE=Release
+      - name: Preserve fix and build original Qt with regression test
+        shell: pwsh
+        run: |
+          Copy-Item src/widgets/itemviews/qtreeview.cpp "$env:RUNNER_TEMP/qtreeview-fixed.cpp"
+          git show HEAD~2:src/widgets/itemviews/qtreeview.cpp | Set-Content -Encoding utf8 src/widgets/itemviews/qtreeview.cpp
+          cmake --build build --target tst_qaccessibility QOffscreenIntegrationPlugin QWindowsIntegrationPlugin --parallel 4
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify regression fails without fix
+        shell: pwsh
+        run: |
+          $exe = (Get-ChildItem build -Filter tst_qaccessibility.exe -Recurse | Select-Object -First 1).FullName
+          if (-not $exe) { throw 'tst_qaccessibility.exe not found' }
+          $env:PATH = "$pwd/build/bin;$env:PATH"
+          $env:QT_PLUGIN_PATH = "$pwd/build/plugins"
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          & $exe treeCollapseAccessibleChildren -o "$env:RUNNER_TEMP/baseline.txt,txt"
+          $code = $LASTEXITCODE
+          $output = Get-Content "$env:RUNNER_TEMP/baseline.txt" -ErrorAction SilentlyContinue
+          Write-Host "Executable: $exe; exit code: $code"
+          if (-not $output) {
+            Write-Host 'Test emitted no output; inspecting executable dependencies and Qt runtime files'
+            & dumpbin /dependents $exe
+            Get-ChildItem build/bin -Filter 'Qt6*.dll' | Select-Object -ExpandProperty Name
+            Get-ChildItem build/plugins/platforms | Select-Object -ExpandProperty Name
+          }
+          $output | ForEach-Object { Write-Host $_ }
+          if ($code -eq 0 -or -not ($output | Select-String -SimpleMatch 'FAIL!') -or -not ($output | Select-String -SimpleMatch 'indexOfChild')) { throw 'Baseline did not demonstrate the expected failure' }
+          exit 0
+      - name: Build and verify fix
+        shell: pwsh
+        run: |
+          Copy-Item "$env:RUNNER_TEMP/qtreeview-fixed.cpp" src/widgets/itemviews/qtreeview.cpp -Force
+          (Get-Item src/widgets/itemviews/qtreeview.cpp).LastWriteTime = Get-Date
+          cmake --build build --target tst_qaccessibility QOffscreenIntegrationPlugin QWindowsIntegrationPlugin --parallel 4
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $exe = (Get-ChildItem build -Filter tst_qaccessibility.exe -Recurse | Select-Object -First 1).FullName
+          $env:PATH = "$pwd/build/bin;$env:PATH"
+          $env:QT_PLUGIN_PATH = "$pwd/build/plugins"
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          & $exe treeCollapseAccessibleChildren treeTest -o "$env:RUNNER_TEMP/fixed.txt,txt"
+          Get-Content "$env:RUNNER_TEMP/fixed.txt" -ErrorAction SilentlyContinue
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build interactive UI Automation probe
+        shell: pwsh
+        run: |
+          cmake -S ci/qt-uia-probe -B probe-build -G Ninja "-DCMAKE_PREFIX_PATH=$pwd/build" -DCMAKE_BUILD_TYPE=Release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build probe-build --parallel 4
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item (Get-ChildItem probe-build -Filter qt_uia_probe.exe -Recurse | Select-Object -First 1).FullName build/bin/
+      - name: Upload Qt and probe for local Windows test
+        uses: actions/upload-artifact@v4
+        with:
+          name: qt-uia-windows
+          path: |
+            build/bin
+            build/plugins/platforms
+          if-no-files-found: error
+          retention-days: 2
